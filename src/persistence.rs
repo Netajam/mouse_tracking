@@ -3,6 +3,7 @@ use rusqlite::{params, Connection, OptionalExtension, Result as SqlResult}; // R
 use std::path::{Path, PathBuf};
 use std::time::Duration; // Corrected import
 use chrono::{Utc, TimeZone, Datelike, Timelike}; // Removed DateTime, ChronoDuration
+use crate::utils::format_duration_secs; // Make sure format_duration_secs is accessible
 
 // get_data_file_path remains the same
 pub fn get_data_file_path() -> Result<PathBuf, String> {
@@ -105,65 +106,68 @@ pub fn finalize_interval(conn: &Connection, row_id: i64, end_time: i64) -> SqlRe
 }
 
 
-// Updated aggregate_and_cleanup to take &mut Connection
-pub fn aggregate_and_cleanup(conn: &mut Connection) -> SqlResult<()> { // <-- Takes &mut Connection
+pub fn aggregate_and_cleanup(conn: &mut Connection) -> SqlResult<()> {
     println!("Starting aggregation and cleanup...");
     let tx = conn.transaction()?;
 
     let now = Utc::now();
     let current_hour_start = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc().timestamp();
 
-    // FIX: Explicitly handle NULL result from MAX() using Option<i64> in the closure
     let max_end_time_to_process: Option<i64> = tx.query_row(
-        // Select the MAX, which might be NULL if no rows match
         "SELECT MAX(end_time) FROM app_intervals WHERE end_time < ?",
         params![current_hour_start],
-        // The closure now maps the row to a Result<Option<i64>, rusqlite::Error>
-        |row| row.get(0), // row.get attempts to convert SQL value (including NULL) to Option<i64>
-    )?; // Use '?' to propagate potential rusqlite errors
-
-    // Now max_end_time_to_process is correctly an Option<i64> representing the MAX value OR None if MAX was NULL.
+        |row| row.get(0),
+    )?;
 
     if let Some(aggregate_until) = max_end_time_to_process {
-         // Ensure aggregate_until is actually before current_hour_start, although the WHERE clause should guarantee this.
          if aggregate_until >= current_hour_start {
              println!("Warning: MAX(end_time) {} is not less than current hour start {}. Skipping aggregation cycle.", aggregate_until, current_hour_start);
-             // This case shouldn't really happen with the WHERE clause, but good to be safe.
              return Ok(());
          }
 
          println!("Aggregating intervals completed before: {}", Utc.timestamp_opt(aggregate_until, 0).unwrap());
 
+        // --- Aggregate into hourly_summary ---
         let hourly_rows = tx.execute(
             "INSERT INTO hourly_summary (app_name, hour_timestamp, total_duration_secs)
              SELECT
                  app_name,
+                 -- Calculate hour_start here
                  CAST(strftime('%s', DATETIME(start_time, 'unixepoch', 'start of hour')) AS INTEGER) as hour_start,
                  SUM(end_time - start_time) as duration
              FROM app_intervals
-             WHERE end_time IS NOT NULL AND end_time <= ?1
+             WHERE end_time IS NOT NULL AND end_time <= ?1 -- Process intervals ending before the cutoff
+             -- FIX: Add condition to filter out rows where strftime result is NULL
+               AND hour_start IS NOT NULL
              GROUP BY app_name, hour_start
              ON CONFLICT(app_name, hour_timestamp) DO UPDATE SET
                  total_duration_secs = total_duration_secs + excluded.total_duration_secs",
-            params![aggregate_until],
+            params![aggregate_until], // Only one parameter needed here now
         )?;
         println!("-> Aggregated {} rows into hourly summary.", hourly_rows);
 
+         // --- Aggregate into daily_summary ---
         let daily_rows = tx.execute(
             "INSERT INTO daily_summary (app_name, day_timestamp, total_duration_secs)
              SELECT
                  app_name,
+                 -- Calculate day_start here
                  CAST(strftime('%s', DATETIME(start_time, 'unixepoch', 'start of day')) AS INTEGER) as day_start,
                  SUM(end_time - start_time) as duration
              FROM app_intervals
-             WHERE end_time IS NOT NULL AND end_time <= ?1
+             WHERE end_time IS NOT NULL AND end_time <= ?1 -- Process same intervals
+             -- FIX: Add condition to filter out rows where strftime result is NULL
+               AND day_start IS NOT NULL
              GROUP BY app_name, day_start
              ON CONFLICT(app_name, day_timestamp) DO UPDATE SET
                  total_duration_secs = total_duration_secs + excluded.total_duration_secs",
-            params![aggregate_until],
+            params![aggregate_until], // Only one parameter needed here now
         )?;
          println!("-> Aggregated {} rows into daily summary.", daily_rows);
 
+
+        // --- Delete aggregated raw intervals ---
+        // This remains the same, it only depends on aggregate_until
         let deleted_rows = tx.execute(
             "DELETE FROM app_intervals WHERE end_time IS NOT NULL AND end_time <= ?1",
             params![aggregate_until],
@@ -171,90 +175,141 @@ pub fn aggregate_and_cleanup(conn: &mut Connection) -> SqlResult<()> { // <-- Ta
         println!("-> Deleted {} processed raw interval rows.", deleted_rows);
 
     } else {
-        // This case means MAX(end_time) was NULL -> no completed intervals before current_hour_start
         println!("No completed intervals found to aggregate.");
     }
 
     tx.commit()?;
     println!("Aggregation and cleanup finished.");
-    Ok(())}
-// Updated calculate_and_print_stats (placeholder)
-pub fn calculate_and_print_stats(conn: &Connection) -> SqlResult<()> { // <-- Takes &Connection (only reads)
-     println!("\n--- Stats Calculation (Using Summary Tables - Placeholder) ---");
+    Ok(())
+}
 
-     // FIX: Use .and_utc().timestamp()
-     let today_start_ts = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
-     println!("Today's Summary (from daily_summary):");
-      let mut stmt_today = conn.prepare(
-         "SELECT app_name, total_duration_secs
-          FROM daily_summary
-          WHERE day_timestamp = ?1
-          ORDER BY total_duration_secs DESC"
-     )?;
-     let today_rows = stmt_today.query_map(params![today_start_ts], |row| {
-         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-     })?;
+// calculate_and_print_stats (Enhanced Placeholder)
+pub fn calculate_and_print_stats(conn: &Connection) -> SqlResult<()> {
+    println!("\n--- Usage Statistics ---");
 
-      for row_result in today_rows {
-          if let Ok((app, secs)) = row_result {
-              println!("{:<40}: {}", app, format_duration_secs(secs));
-          }
-      }
+    // --- Today's Stats ---
+    let today_start_ts = Utc::now().date_naive().and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
+    println!("\n--- Today's Summary (from daily_summary) ---");
+    let mut stmt_today = conn.prepare(
+        "SELECT app_name, total_duration_secs
+         FROM daily_summary
+         WHERE day_timestamp = ?1
+         ORDER BY total_duration_secs DESC"
+    )?;
+    let today_rows = stmt_today.query_map(params![today_start_ts], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    let mut found_today = false;
+    for row_result in today_rows {
+        if let Ok((app, secs)) = row_result {
+            println!("{:<40}: {}", app, format_duration_secs(secs));
+            found_today = true;
+        }
+    }
+     if !found_today { println!("No aggregated data found for today yet."); }
 
-     // FIX: Use .and_utc().timestamp()
-     let current_hour_start_ts = Utc::now().date_naive().and_hms_opt(Utc::now().hour(), 0, 0).unwrap().and_utc().timestamp();
-     println!("\nCurrent Hour's Summary (from hourly_summary + current raw):");
-      let mut hourly_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-       let mut stmt_hour_sum = conn.prepare(
+    // --- Last Completed Hour ---
+    let now = Utc::now();
+    // Timestamp for the start of the hour *before* the current one
+    let last_completed_hour_start_ts = (now - chrono::Duration::hours(1))
+                                       .date_naive()
+                                       .and_hms_opt( (now - chrono::Duration::hours(1)).hour(), 0, 0).unwrap()
+                                       .and_utc().timestamp();
+    println!("\n--- Last Completed Hour Summary (from hourly_summary) ---");
+    let mut stmt_last_hour = conn.prepare(
          "SELECT app_name, total_duration_secs
           FROM hourly_summary
-          WHERE hour_timestamp = ?1"
+          WHERE hour_timestamp = ?1
+          ORDER BY total_duration_secs DESC"
      )?;
-     let hour_sum_rows = stmt_hour_sum.query_map(params![current_hour_start_ts], |row| {
+     let last_hour_rows = stmt_last_hour.query_map(params![last_completed_hour_start_ts], |row| {
          Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
      })?;
-      for row_result in hour_sum_rows {
-          if let Ok((app, secs)) = row_result {
-              hourly_totals.insert(app, secs);
-          }
-      }
-
-      // FIX: Use .and_utc().timestamp()
-      let current_time_ts = Utc::now().timestamp(); // Direct timestamp is fine here
-       let mut stmt_hour_raw = conn.prepare(
-         "SELECT app_name, SUM(COALESCE(end_time, ?1) - MAX(start_time, ?2)) as duration
-          FROM app_intervals
-          WHERE MAX(start_time, ?2) < COALESCE(end_time, ?1)
-          AND (end_time IS NULL OR end_time >= ?2)
-          GROUP BY app_name"
-     )?;
-      let hour_raw_rows = stmt_hour_raw.query_map(params![current_time_ts, current_hour_start_ts], |row| {
-         Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-     })?;
-
-      for row_result in hour_raw_rows {
-          if let Ok((app, secs)) = row_result {
-             *hourly_totals.entry(app).or_insert(0) += secs;
-          }
-      }
-
-      let mut sorted_hourly: Vec<_> = hourly_totals.into_iter().collect();
-      sorted_hourly.sort_by(|a, b| b.1.cmp(&a.1));
-       for (app, secs) in sorted_hourly {
-          println!("{:<40}: {}", app, format_duration_secs(secs));
-      }
-
-     println!("-----------------------------------------");
-     Ok(())
- }
+     let mut found_last_hour = false;
+     for row_result in last_hour_rows {
+         if let Ok((app, secs)) = row_result {
+             println!("{:<40}: {}", app, format_duration_secs(secs));
+             found_last_hour = true;
+         }
+     }
+      if !found_last_hour { println!("No aggregated data found for the last completed hour."); }
 
 
-// format_duration_secs: Fix unused variable
-fn format_duration_secs(total_seconds: i64) -> String {
+    // --- Current Hour (Approximate: Aggregated + Raw) ---
+    let current_hour_start_ts = now.date_naive().and_hms_opt(now.hour(), 0, 0).unwrap().and_utc().timestamp();
+    println!("\n--- Current Hour Summary (approximate) ---");
+    let mut hourly_totals: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // 1. Get from hourly_summary (if aggregation ran mid-hour)
+    let mut stmt_hour_sum = conn.prepare(
+        "SELECT app_name, total_duration_secs
+         FROM hourly_summary
+         WHERE hour_timestamp = ?1"
+    )?;
+    let hour_sum_rows = stmt_hour_sum.query_map(params![current_hour_start_ts], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row_result in hour_sum_rows { if let Ok((app, secs)) = row_result { hourly_totals.insert(app, secs); } }
+
+    // 2. Get raw intervals overlapping this hour
+    let current_time_ts = now.timestamp();
+    let mut stmt_hour_raw = conn.prepare( // Query adjusted slightly for clarity/correctness
+        "SELECT app_name,
+                SUM(
+                    MIN(COALESCE(end_time, ?1), ?2) -- End time clamped to now and end of hour
+                    -
+                    MAX(start_time, ?3)             -- Start time clamped to start of hour
+                ) as duration
+         FROM app_intervals
+         WHERE start_time < ?2           -- Interval started before end of current hour
+           AND COALESCE(end_time, ?1) > ?3 -- Interval ended after start of current hour (or is still running)
+         GROUP BY app_name
+         HAVING duration > 0" // Exclude intervals completely outside the hour after clamping
+    )?;
+    // Parameters: 1: now, 2: end_of_current_hour, 3: start_of_current_hour
+    let end_of_current_hour_ts = current_hour_start_ts + 3600; // Add 1 hour
+    let hour_raw_rows = stmt_hour_raw.query_map(params![current_time_ts, end_of_current_hour_ts, current_hour_start_ts], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)) // Duration might be NULL if SUM is empty, handle this? Let's assume i64 for now.
+    })?;
+
+    // 3. Combine results
+    for row_result in hour_raw_rows {
+        if let Ok((app, secs)) = row_result {
+            *hourly_totals.entry(app).or_insert(0) += secs;
+        }
+    }
+
+    // Print combined hourly totals
+    if hourly_totals.is_empty() {
+         println!("No activity recorded yet for the current hour.");
+    } else {
+        let mut sorted_hourly: Vec<_> = hourly_totals.into_iter().collect();
+        sorted_hourly.sort_by(|a, b| b.1.cmp(&a.1));
+        for (app, secs) in sorted_hourly {
+            println!("{:<40}: {}", app, format_duration_secs(secs));
+        }
+    }
+
+    println!("---------------------------------------------");
+    Ok(())
+}
+
+// Needs access to utils::format_duration_secs
+// Ensure format_duration_secs is public in utils.rs or move it here
+mod utils {
+   use std::time::Duration;
+   pub fn format_duration_secs(total_seconds: i64) -> String {
+       if total_seconds < 0 { return "Invalid".to_string(); }
+       let hours = total_seconds / 3600;
+       let minutes = (total_seconds % 3600) / 60;
+       let seconds = total_seconds % 60;
+       format!("{:02}:{:02}:{:02}", hours, minutes, seconds);
+   
+
     if total_seconds < 0 { return "Invalid".to_string(); }
     // let duration = Duration::from_secs(total_seconds as u64); // Unused
     let hours = total_seconds / 3600;
     let minutes = (total_seconds % 3600) / 60;
     let seconds = total_seconds % 60;
     format!("{:02}:{:02}:{:02}", hours, minutes, seconds)
+}
 }

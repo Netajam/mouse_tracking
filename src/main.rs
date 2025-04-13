@@ -7,15 +7,15 @@ mod utils;
 mod windows_api;
 
 // Use items from modules
-use persistence::{
-    open_connection, initialize_db, insert_new_interval, finalize_interval,
-    finalize_dangling_intervals, get_data_file_path,
-    aggregate_and_cleanup, // Keep import
-};
-use utils::format_duration;
-#[cfg(target_os = "windows")]
-use windows_api::get_app_under_cursor;
+// Import persistence items needed by BOTH run and stats
+use persistence::{get_data_file_path, open_connection};
+// Import items specifically for stats (if separated later) or run
+// ...
 
+#[cfg(target_os = "windows")]
+use windows_api::get_app_under_cursor; // Only needed for run
+
+// --- General Imports ---
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -25,46 +25,101 @@ use std::{
     time::{Duration, Instant},
 };
 use chrono::Utc;
+use clap::Parser; // Import clap
 
-#[cfg(target_os = "windows")]
+// --- Define CLI Structure ---
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum Commands {
+    /// Run the activity tracker in the foreground.
+    Run,
+    /// Display usage statistics.
+    Stats,
+    // Add other commands later (e.g., Config, Aggregate)
+}
+// --- End CLI Structure ---
+
+
+// --- Main Function (Dispatching Commands) ---
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Tracking time based on app under the mouse cursor (Windows only)...");
-    println!("Logs events to SQLite DB. Press Ctrl+C to stop.");
+    let cli = Cli::parse();
 
-    // --- Get Data Path & Open DB Connection ---
+    // Get Data Path (needed by both commands potentially)
     let data_path = get_data_file_path().map_err(|e| e.to_string())?;
+
+    // Conditionally compile the command handling for Windows
+    #[cfg(target_os = "windows")]
+    {
+        match cli.command {
+            Commands::Run => {
+                // Call the function containing the tracking loop
+                run_tracker(&data_path)?;
+            }
+            Commands::Stats => {
+                 // Call the function to display statistics
+                show_stats(&data_path)?;
+            }
+        }
+    }
+
+    // Handle non-Windows platforms
+    #[cfg(not(target_os = "windows"))]
+    {
+        match cli.command {
+             Commands::Run => {
+                eprintln!("Error: The 'run' command currently only supports Windows.");
+                std::process::exit(1); // Exit with error
+            }
+             Commands::Stats => {
+                eprintln!("Error: The 'stats' command currently only supports Windows (as it reads Windows data).");
+                 std::process::exit(1); // Exit with error
+            }
+        }
+    }
+
+
+    Ok(())
+}
+
+
+// --- run_tracker Function (Contains the original main loop logic) ---
+#[cfg(target_os = "windows")]
+fn run_tracker(data_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    println!("Starting tracker (run command)...");
+    println!("Logs events to SQLite DB. Press Ctrl+C to stop.");
     println!("Database path: {:?}", data_path);
-    // FIX: Make connection mutable
-    let mut conn = open_connection(&data_path)?;
-    // FIX: Pass mutable reference
+
+    // Uses from persistence module need to be imported at the top or here
+    use persistence::{initialize_db, insert_new_interval, finalize_interval, finalize_dangling_intervals, aggregate_and_cleanup};
+
+    // --- Open DB & Initialize ---
+    let mut conn = open_connection(data_path)?;
     initialize_db(&mut conn)?;
-
-    // --- Finalize old intervals on startup ---
     let startup_timestamp = Utc::now().timestamp();
-    // finalize_dangling_intervals only needs immutable ref
     finalize_dangling_intervals(&conn, startup_timestamp)?;
-
-    // --- Aggregate data from previous runs ---
-    // FIX: Pass mutable reference
     aggregate_and_cleanup(&mut conn)?;
 
     // --- Ctrl+C Handling ---
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
-        println!("\nCtrl+C detected. Shutting down...");
+        println!("\nCtrl+C detected. Shutting down tracker...");
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
+    // --- State Variables for Active Interval ---
     let mut current_cursor_target: Option<(String, Instant, i64)> = None;
     let check_interval = Duration::from_secs(1);
 
     // --- Main Loop ---
     while running.load(Ordering::SeqCst) {
         let loop_start_time = Instant::now();
-        // Note: insert/finalize only need immutable reference according to rusqlite docs
-        // for execute calls. If performance becomes an issue, prepared statements
-        // might be better, but keep simple for now.
         let detection_result = windows_api::get_app_under_cursor();
         let now_instant = Instant::now();
         let now_timestamp = Utc::now().timestamp();
@@ -80,9 +135,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if current_app_name_option.as_ref() != Some(last_app) {
                     let row_id_to_finalize = *last_row_id;
                      match persistence::finalize_interval(&conn, row_id_to_finalize, now_timestamp) {
-                        Ok(0) => eprintln!("[Warning] Tried to finalize interval ID {} but it was already finalized or not found.", row_id_to_finalize),
+                        Ok(0) => {}, // Ignore warning in run mode for less noise
                         Ok(_) => { },
-                        Err(e) => eprintln!("Error finalizing interval ID {}: {}", row_id_to_finalize, e),
+                        Err(e) => eprintln!("[Run] Error finalizing interval ID {}: {}", row_id_to_finalize, e),
                     }
 
                     if let Some(new_app) = &current_app_name_option {
@@ -91,7 +146,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
                             }
                             Err(e) => {
-                                eprintln!("Error starting interval for {}: {}", new_app, e);
+                                eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
                                 current_cursor_target = None;
                             }
                         }
@@ -107,7 +162,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
                         }
                         Err(e) => {
-                             eprintln!("Error starting interval for {}: {}", new_app, e);
+                             eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
                         }
                     }
                 }
@@ -125,30 +180,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some((_last_app, _start_instant, last_row_id)) = current_cursor_target {
         let shutdown_timestamp = Utc::now().timestamp();
         match persistence::finalize_interval(&conn, last_row_id, shutdown_timestamp) {
-             Ok(0) => eprintln!("[Warning] Tried to finalize interval ID {} on shutdown but it was already finalized or not found.", last_row_id),
+             Ok(0) => {}, // Ignore warning
              Ok(_) => println!("Finalized last active interval {}.", last_row_id),
-             Err(e) => eprintln!("Error finalizing last interval ID {} on shutdown: {}", last_row_id, e),
+             Err(e) => eprintln!("[Run] Error finalizing last interval ID {} on shutdown: {}", last_row_id, e),
         }
     }
-
-    // --- Removed optional aggregation on shutdown ---
-
-    println!("Database connection closed implicitly when 'conn' goes out of scope.");
-    println!("Run '[your_app_name] stats' to see usage summary."); // Placeholder message
-
+    println!("Tracker stopped.");
     Ok(())
-}
+} // --- End run_tracker ---
 
 
-// --- Non-Windows main and utils remain the same ---
-#[cfg(not(target_os = "windows"))]
-fn main() {
-    eprintln!("This example currently only supports Windows.");
-}
-#[cfg(not(target_os = "windows"))]
-mod utils {
-     use std::time::Duration;
-     pub fn format_duration(_duration: Duration) -> String {
-         "00:00:00".to_string()
-     }
-}
+// --- show_stats Function ---
+#[cfg(target_os = "windows")]
+fn show_stats(data_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+     println!("Showing statistics...");
+     println!("Database path: {:?}", data_path);
+
+     // Need to import the specific function for displaying stats
+     use persistence::calculate_and_print_stats;
+
+     let conn = open_connection(data_path)?;
+
+     // Call the function in persistence to query and print
+     calculate_and_print_stats(&conn)?;
+
+     Ok(())
+} //--- End show_stats ---
