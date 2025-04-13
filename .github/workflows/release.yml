@@ -49,7 +49,7 @@ jobs:
       # 4. Build the application in release mode
       - name: Build Release Binary
         # Build specifically for the target architecture (usually x86_64-pc-windows-msvc)
-        run: cargo build --verbose --release --locked # --target x86_64-pc-windows-msvc (usually implicit)
+        run: cargo build --verbose --release # --target x86_64-pc-windows-msvc (usually implicit)
         # Use --locked to ensure Cargo.lock is used
 
       # 5. Prepare artifact for release (create a ZIP archive)
