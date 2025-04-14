@@ -236,9 +236,6 @@ fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
             println!("Successfully updated to version: {}", v);
             println!("Please restart the application if it was running.");
         }
-        self_update::Status::NotUpdated(v) => {
-             println!("Skipped update for version: {}", v); // Should not happen unless configured?
-        }
     }
 
     Ok(())
