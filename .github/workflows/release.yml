@@ -51,4 +51,4 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ env.TARGET_WINDOWS }}.zip # Match the packaged name
+            ${{ env.BINARY_NAME }}-${{ github.ref_name }}-${{ env.TARGET_WINDOWS }}.zip 
