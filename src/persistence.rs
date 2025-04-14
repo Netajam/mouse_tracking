@@ -9,7 +9,8 @@ use crate::utils::format_duration_secs; // Make sure format_duration_secs is acc
 pub fn get_data_file_path() -> Result<PathBuf, String> {
     match dirs::data_dir() {
         Some(mut path) => {
-            path.push("RustAppTimeTracker");
+            let app_name = env!("CARGO_PKG_NAME");
+            path.push(app_name); 
             path.push("app_usage.sqlite");
             if let Some(parent) = path.parent() {
                  if !parent.exists() {
