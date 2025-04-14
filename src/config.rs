@@ -18,3 +18,4 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(CHECK_INTERVAL_SECONDS)
 // === Persistence Settings ===
 // Filename for the SQLite database.
 pub const DATABASE_FILENAME: &'static str = "app_usage.sqlite";
+pub const DANGLING_INTERVAL_RECENT_THRESHOLD_SECS: i64 = 24 * 60 * 60; // 1 day (in seconds)
