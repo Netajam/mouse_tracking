@@ -42,6 +42,8 @@ enum Commands {
     /// Display usage statistics.
     Stats,
     // Add other commands later (e.g., Config, Aggregate)
+    Update, // update the app
+
 }
 // --- End CLI Structure ---
 
@@ -58,12 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         match cli.command {
             Commands::Run => {
-                // Call the function containing the tracking loop
                 run_tracker(&data_path)?;
             }
             Commands::Stats => {
-                 // Call the function to display statistics
                 show_stats(&data_path)?;
+            }
+            Commands::Update => {
+                handle_update()?;
             }
         }
     }
@@ -206,3 +209,37 @@ fn show_stats(data_path: &std::path::Path) -> Result<(), Box<dyn std::error::Err
 
      Ok(())
 } //--- End show_stats ---
+
+#[cfg(target_os = "windows")]
+fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
+    println!("Checking for updates...");
+
+    // Get current version from Cargo.toml at compile time
+    let current_version = env!("CARGO_PKG_VERSION");
+    println!("Current version: {}", current_version);
+
+    let status = self_update::backends::github::Update::configure()
+        .repo_owner("Netajam")
+        .repo_name("mouse_tracking")   
+        .target(self_update::get_target()) 
+        .bin_name(env!("CARGO_PKG_NAME")) 
+        .show_download_progress(true)
+        .current_version(current_version)
+        .build()? 
+        .update()?; 
+
+    match status {
+        self_update::Status::UpToDate(v) => {
+            println!("Already running the latest version: {}", v);
+        }
+        self_update::Status::Updated(v) => {
+            println!("Successfully updated to version: {}", v);
+            println!("Please restart the application if it was running.");
+        }
+        self_update::Status::NotUpdated(v) => {
+             println!("Skipped update for version: {}", v); // Should not happen unless configured?
+        }
+    }
+
+    Ok(())
+}
