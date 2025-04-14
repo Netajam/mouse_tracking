@@ -3,15 +3,16 @@ name: Release Build and Upload
 on:
   push:
     tags:
-      - 'v*.*.*' #
+      - 'v*.*.*' 
 
 env:
   BINARY_NAME: mouse_tracking
   CARGO_TERM_COLOR: always
+  TARGET_WINDOWS: x86_64-pc-windows-msvc
 
 jobs:
   build_release_windows:
-    name: Build Release (Windows - ${{ env.TARGET_WINDOWS }})
+    name: Build Release (Windows)
     runs-on: windows-latest
 
     permissions:
