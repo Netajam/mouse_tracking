@@ -1,6 +1,6 @@
 // src/commands/run.rs
 
-use crate::{persistence, windows_api, config, errors::{AppError, AppResult}};
+use crate::{persistence, windows_api, config, errors::AppResult};
 use std::path::Path;
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use std::thread;
@@ -38,7 +38,7 @@ pub fn execute(data_path: &Path) -> AppResult<()> {
     })?;
 
     // --- State Variables for Active Interval ---
-    let mut current_cursor_target: Option<(String, Instant, i64)> = None;
+    let mut current_cursor_target: Option<(String, String, Instant, i64)> = None;
     // Use config constant for check interval
     let check_interval = config::CHECK_INTERVAL;
 
@@ -46,63 +46,65 @@ pub fn execute(data_path: &Path) -> AppResult<()> {
     while running.load(Ordering::SeqCst) {
         let loop_start_time = Instant::now();
 
-
-        let detection_result: Result<Option<String>, AppError> = windows_api::get_app_under_cursor()
-            .map_err(|e| AppError::Platform(format!("Failed to get app under cursor: {}", e)));
+        let detection_result_option: Option<(String, String)> = windows_api::get_app_under_cursor()?;
+        // If we reach here, get_app_under_cursor returned Ok(Some(...)) or Ok(None)
 
         let now_instant = Instant::now();
         let now_timestamp = Utc::now().timestamp();
 
-        // FIX: Handle the Result FIRST to get the Option<String>
-        let current_app_name_option: Option<String> = match detection_result {
-            Ok(opt_name) => opt_name, // If platform call succeeded, use the Option<String> it returned
-            Err(e) => {
-                // If platform call failed, log the error and treat as None for tracking
-                eprintln!("[Run] Platform API Error: {}", e);
-                None
-            }
-        };
-
-        // Use '?' for database operations where possible, log errors otherwise
+        // --- State machine logic ---
         match current_cursor_target.as_mut() {
-            Some((last_app, _start_instant, last_row_id)) => {
-                if current_app_name_option.as_ref() != Some(last_app) {
+            // Currently tracking an app/title
+            Some((last_app, last_title, _start_instant, last_row_id)) => {
+
+                // Check if the target info changed (app OR title OR became None)
+                // Compare current Option<(String, String)> with stored (String, String)
+                let target_changed = match &detection_result_option {
+                    Some((current_app, current_title)) => {
+                        // Changed if current app/title doesn't match last app/title
+                        current_app != last_app || current_title != last_title
+                    }
+                    None => true, // Changed if current target is None
+                };
+
+                if target_changed {
+                    // Target changed or became None. Finalize the last interval.
                     let row_id_to_finalize = *last_row_id;
-                    // Log errors from finalize_interval, but don't stop the tracker loop
                     if let Err(e) = finalize_interval(&conn, row_id_to_finalize, now_timestamp) {
-                        // Check if it's just a "no rows updated" scenario (might happen if already finalized)
-                        // We could potentially ignore certain rusqlite errors if needed, but logging is safer.
                         eprintln!("[Run] Warning/Error finalizing interval ID {}: {}", row_id_to_finalize, e);
                     }
 
-                    // Start new interval or clear target
-                    if let Some(new_app) = &current_app_name_option {
-                        match insert_new_interval(&conn, new_app, now_timestamp) {
+                    // Check if we moved to a NEW valid target
+                    if let Some((new_app, new_title)) = detection_result_option { // Consume the option
+                        match insert_new_interval(&conn, &new_app, &new_title, now_timestamp) {
                             Ok(new_row_id) => {
-                                current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
+                                // Update state to the new app/title
+                                current_cursor_target = Some((new_app, new_title, now_instant, new_row_id));
                             }
                             Err(e) => {
-                                // Log error, don't stop loop, clear target
-                                eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
-                                current_cursor_target = None;
+                                eprintln!("[Run] Error starting interval for {} - {}: {}", new_app, new_title, e);
+                                current_cursor_target = None; // Clear state on DB error
                             }
                         }
                     } else {
+                        // Moved off to nothing, clear state
                         current_cursor_target = None;
                     }
                 }
-                // Else: Still on the same app, do nothing to DB
+                // Else: Still on the same app AND same title, do nothing
             }
             None => {
-                // Not tracking, check if we should start
-                if let Some(new_app) = &current_app_name_option {
-                     match insert_new_interval(&conn, new_app, now_timestamp) {
+                // Not currently tracking anything
+                // Check if we moved onto a valid target
+                 if let Some((new_app, new_title)) = detection_result_option { // Consume the option
+                    // Moved onto an app/title, start tracking
+                    match insert_new_interval(&conn, &new_app, &new_title, now_timestamp) {
                         Ok(new_row_id) => {
-                            current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
+                            current_cursor_target = Some((new_app, new_title, now_instant, new_row_id));
                         }
                         Err(e) => {
-                             // Log error, remain in None state
-                             eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
+                            eprintln!("[Run] Error starting interval for {} - {}: {}", new_app, new_title, e);
+                            // Remain in None state
                         }
                     }
                 }
@@ -119,11 +121,10 @@ pub fn execute(data_path: &Path) -> AppResult<()> {
 
     // --- Shutdown ---
     println!("Stopping tracker...");
-    if let Some((_last_app, _start_instant, last_row_id)) = current_cursor_target {
+    if let Some((_last_app, _last_title, _start_instant, last_row_id)) = current_cursor_target {
         let shutdown_timestamp = Utc::now().timestamp();
-        // Log errors from finalize_interval, but don't fail the shutdown
         match finalize_interval(&conn, last_row_id, shutdown_timestamp) {
-            Ok(0) => {}, // Ok, might have already been finalized somehow
+            Ok(0) => {},
             Ok(_) => println!("Finalized last active interval {}.", last_row_id),
             Err(e) => eprintln!("[Run] Error finalizing last interval ID {} on shutdown: {}", last_row_id, e),
         }

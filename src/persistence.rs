@@ -88,10 +88,10 @@ pub fn finalize_dangling_intervals(conn: &Connection, shutdown_time: i64) -> Sql
     Ok(total_updated)
 }
 
-pub fn insert_new_interval(conn: &Connection, app_name: &str, start_time: i64) -> SqlResult<i64> {
+pub fn insert_new_interval(conn: &Connection, app_name: &str, window_title: &str,start_time: i64) -> SqlResult<i64> {
     conn.execute(
         include_str!("../sql/insert_interval.sql"),
-        params![app_name, start_time],
+        params![app_name,window_title, start_time],
     )?;
     Ok(conn.last_insert_rowid())
 }
