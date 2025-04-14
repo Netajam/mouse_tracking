@@ -1,6 +1,6 @@
 // src/commands/stats.rs
 
-use crate::persistence::{self, AppUsageRecord, StatsData}; // Import structs and module
+use crate::persistence::{self}; // Import structs and module
 use crate::utils::format_duration_secs; // Import the formatting function
 use std::path::Path;
 
