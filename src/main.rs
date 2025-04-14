@@ -1,31 +1,14 @@
 // src/main.rs
 
-// Declare modules
+mod commands; 
+mod config;
 mod persistence;
 mod utils;
 #[cfg(target_os = "windows")]
 mod windows_api;
 
-// Use items from modules
-// Import persistence items needed by BOTH run and stats
-use persistence::{get_data_file_path, open_connection};
-// Import items specifically for stats (if separated later) or run
-// ...
-
-#[cfg(target_os = "windows")]
-use windows_api::get_app_under_cursor; // Only needed for run
-
-// --- General Imports ---
-use std::{
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Arc,
-    },
-    thread,
-    time::{Duration, Instant},
-};
-use chrono::Utc;
-use clap::Parser; // Import clap
+use persistence::get_data_file_path; 
+use clap::Parser;
 
 // --- Define CLI Structure ---
 #[derive(Parser, Debug)]
@@ -41,9 +24,8 @@ enum Commands {
     Run,
     /// Display usage statistics.
     Stats,
-    // Add other commands later (e.g., Config, Aggregate)
-    Update, // update the app
-
+    /// Check for updates and self-update the application.
+    Update,
 }
 // --- End CLI Structure ---
 
@@ -52,21 +34,25 @@ enum Commands {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    // Get Data Path (needed by both commands potentially)
+    // Get Data Path (needed by run and stats)
     let data_path = get_data_file_path().map_err(|e| e.to_string())?;
 
     // Conditionally compile the command handling for Windows
     #[cfg(target_os = "windows")]
     {
+        // Use the commands module to execute actions
         match cli.command {
             Commands::Run => {
-                run_tracker(&data_path)?;
+                // Pass data_path to the run command's execute function
+                commands::run::execute(&data_path)?;
             }
             Commands::Stats => {
-                show_stats(&data_path)?;
+                // Pass data_path to the stats command's execute function
+                commands::stats::execute(&data_path)?;
             }
             Commands::Update => {
-                handle_update()?;
+                // Update command doesn't need data_path
+                commands::update::execute()?;
             }
         }
     }
@@ -75,168 +61,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(not(target_os = "windows"))]
     {
         match cli.command {
-             Commands::Run => {
-                eprintln!("Error: The 'run' command currently only supports Windows.");
-                std::process::exit(1); // Exit with error
+             Commands::Run | Commands::Stats | Commands::Update => {
+                eprintln!("Error: This command currently only supports Windows.");
+                // Use std::process::exit to return non-zero code
+                std::process::exit(1);
             }
-             Commands::Stats => {
-                eprintln!("Error: The 'stats' command currently only supports Windows (as it reads Windows data).");
-                 std::process::exit(1); // Exit with error
-            }
-        }
-    }
-
-
-    Ok(())
-}
-
-
-// --- run_tracker Function (Contains the original main loop logic) ---
-#[cfg(target_os = "windows")]
-fn run_tracker(data_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-    println!("Starting tracker (run command)...");
-    println!("Logs events to SQLite DB. Press Ctrl+C to stop.");
-    println!("Database path: {:?}", data_path);
-
-    // Uses from persistence module need to be imported at the top or here
-    use persistence::{initialize_db, insert_new_interval, finalize_interval, finalize_dangling_intervals, aggregate_and_cleanup};
-
-    // --- Open DB & Initialize ---
-    let mut conn = open_connection(data_path)?;
-    initialize_db(&mut conn)?;
-    let startup_timestamp = Utc::now().timestamp();
-    finalize_dangling_intervals(&conn, startup_timestamp)?;
-    aggregate_and_cleanup(&mut conn)?;
-
-    // --- Ctrl+C Handling ---
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        println!("\nCtrl+C detected. Shutting down tracker...");
-        r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
-
-    // --- State Variables for Active Interval ---
-    let mut current_cursor_target: Option<(String, Instant, i64)> = None;
-    let check_interval = Duration::from_secs(1);
-
-    // --- Main Loop ---
-    while running.load(Ordering::SeqCst) {
-        let loop_start_time = Instant::now();
-        let detection_result = windows_api::get_app_under_cursor();
-        let now_instant = Instant::now();
-        let now_timestamp = Utc::now().timestamp();
-
-        let current_app_name_option: Option<String> = match detection_result {
-            Ok(Some(name)) => Some(name),
-            Ok(None) => None,
-            Err(_e) => None,
-        };
-
-        match current_cursor_target.as_mut() {
-             Some((last_app, _start_instant, last_row_id)) => {
-                if current_app_name_option.as_ref() != Some(last_app) {
-                    let row_id_to_finalize = *last_row_id;
-                     match persistence::finalize_interval(&conn, row_id_to_finalize, now_timestamp) {
-                        Ok(0) => {}, // Ignore warning in run mode for less noise
-                        Ok(_) => { },
-                        Err(e) => eprintln!("[Run] Error finalizing interval ID {}: {}", row_id_to_finalize, e),
-                    }
-
-                    if let Some(new_app) = &current_app_name_option {
-                        match persistence::insert_new_interval(&conn, new_app, now_timestamp) {
-                            Ok(new_row_id) => {
-                                current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
-                            }
-                            Err(e) => {
-                                eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
-                                current_cursor_target = None;
-                            }
-                        }
-                    } else {
-                        current_cursor_target = None;
-                    }
-                }
-            }
-            None => {
-                if let Some(new_app) = &current_app_name_option {
-                     match persistence::insert_new_interval(&conn, new_app, now_timestamp) {
-                        Ok(new_row_id) => {
-                            current_cursor_target = Some((new_app.clone(), now_instant, new_row_id));
-                        }
-                        Err(e) => {
-                             eprintln!("[Run] Error starting interval for {}: {}", new_app, e);
-                        }
-                    }
-                }
-            }
-        }
-
-        let elapsed = loop_start_time.elapsed();
-        if elapsed < check_interval {
-            thread::sleep(check_interval - elapsed);
-        }
-    }
-
-    // --- Shutdown ---
-    println!("Stopping tracker...");
-    if let Some((_last_app, _start_instant, last_row_id)) = current_cursor_target {
-        let shutdown_timestamp = Utc::now().timestamp();
-        match persistence::finalize_interval(&conn, last_row_id, shutdown_timestamp) {
-             Ok(0) => {}, // Ignore warning
-             Ok(_) => println!("Finalized last active interval {}.", last_row_id),
-             Err(e) => eprintln!("[Run] Error finalizing last interval ID {} on shutdown: {}", last_row_id, e),
-        }
-    }
-    println!("Tracker stopped.");
-    Ok(())
-} // --- End run_tracker ---
-
-
-// --- show_stats Function ---
-#[cfg(target_os = "windows")]
-fn show_stats(data_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
-     println!("Showing statistics...");
-     println!("Database path: {:?}", data_path);
-
-     // Need to import the specific function for displaying stats
-     use persistence::calculate_and_print_stats;
-
-     let conn = open_connection(data_path)?;
-
-     // Call the function in persistence to query and print
-     calculate_and_print_stats(&conn)?;
-
-     Ok(())
-} //--- End show_stats ---
-
-#[cfg(target_os = "windows")]
-fn handle_update() -> Result<(), Box<dyn std::error::Error>> {
-    println!("Checking for updates...");
-
-    // Get current version from Cargo.toml at compile time
-    let current_version = env!("CARGO_PKG_VERSION");
-    println!("Current version: {}", current_version);
-
-    let status = self_update::backends::github::Update::configure()
-        .repo_owner("Netajam")
-        .repo_name("mouse_tracking")   
-        .target(self_update::get_target()) 
-        .bin_name(env!("CARGO_PKG_NAME")) 
-        .show_download_progress(true)
-        .current_version(current_version)
-        .build()? 
-        .update()?; 
-
-    match status {
-        self_update::Status::UpToDate(v) => {
-            println!("Already running the latest version: {}", v);
-        }
-        self_update::Status::Updated(v) => {
-            println!("Successfully updated to version: {}", v);
-            println!("Please restart the application if it was running.");
         }
     }
 
     Ok(())
 }
+
