@@ -1,19 +1,23 @@
 // src/commands/stats.rs
 
-use crate::persistence::{self}; // Import structs and module
-use crate::utils::format_duration_secs; // Import the formatting function
+use crate::persistence::{self};
+use crate::utils::format_duration_secs;
+use crate::errors::AppResult; 
 use std::path::Path;
 
-pub fn execute(data_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+// Change return type to AppResult<()>
+pub fn execute(data_path: &Path) -> AppResult<()> {
      println!("Showing statistics...");
      println!("Database path: {:?}", data_path);
 
+     // Use '?' - rusqlite::Error will be automatically converted to AppError::Database by #[from]
      let conn = persistence::open_connection(data_path)?;
 
-     // Call the function in persistence to query data
+     // Use '?' - rusqlite::Error will be automatically converted to AppError::Database by #[from]
      let stats_data = persistence::query_aggregated_stats(&conn)?;
 
-     // --- Print Today's Summary ---
+     // --- Printing logic remains the same ---
+
      println!("\n--- Today's Summary ---");
      if stats_data.today.is_empty() {
          println!("No aggregated data found for today yet.");
@@ -23,7 +27,6 @@ pub fn execute(data_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
          }
      }
 
-     // --- Print Last Hour's Summary ---
      println!("\n--- Last Completed Hour Summary ---");
      if stats_data.last_hour.is_empty() {
           println!("No aggregated data found for the last completed hour.");
@@ -33,7 +36,6 @@ pub fn execute(data_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
           }
      }
 
-     // --- Print Current Hour's Summary ---
      println!("\n--- Current Hour Summary (approximate) ---");
       if stats_data.current_hour.is_empty() {
           println!("No activity recorded yet for the current hour.");
@@ -44,6 +46,6 @@ pub fn execute(data_path: &Path) -> Result<(), Box<dyn std::error::Error>> {
      }
      println!("---------------------------------------------");
 
-
+     // Return Ok(()) on success
      Ok(())
 }

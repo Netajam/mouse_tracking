@@ -7,7 +7,7 @@ use std::time::Duration;
 // These should match your GitHub repository.
 pub const GITHUB_REPO_OWNER: &'static str = "Netajam";
 pub const GITHUB_REPO_NAME: &'static str = "mouse_tracking";
-
+pub const APP_NAME: &'static str = "mouse_tracking";
 // === Tracker Settings ===
 // How often to check the window under the cursor (in seconds).
 pub const CHECK_INTERVAL_SECONDS: u64 = 1;

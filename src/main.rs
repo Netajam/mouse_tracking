@@ -1,16 +1,20 @@
 // src/main.rs
 
-mod commands; 
+// Declare modules
+mod commands;
 mod config;
+mod errors;
 mod persistence;
 mod utils;
 #[cfg(target_os = "windows")]
 mod windows_api;
 
-use persistence::get_data_file_path; 
+// --- Use items needed in main ---
+use errors::{AppError, AppResult}; 
+use persistence::get_data_file_path;
 use clap::Parser;
 
-// --- Define CLI Structure ---
+// --- Define CLI Structure (remains the same) ---
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
@@ -31,27 +35,26 @@ enum Commands {
 
 
 // --- Main Function (Dispatching Commands) ---
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cli = Cli::parse();
+fn main() -> AppResult<()> {
+    let cli = Cli::parse(); 
 
     // Get Data Path (needed by run and stats)
-    let data_path = get_data_file_path().map_err(|e| e.to_string())?;
+    // Map the String error from get_data_file_path to AppError::DataDir
+    let data_path = get_data_file_path().map_err(AppError::DataDir)?;
 
     // Conditionally compile the command handling for Windows
     #[cfg(target_os = "windows")]
     {
         // Use the commands module to execute actions
+        // Use '?' to propagate AppResult from execute functions
         match cli.command {
             Commands::Run => {
-                // Pass data_path to the run command's execute function
                 commands::run::execute(&data_path)?;
             }
             Commands::Stats => {
-                // Pass data_path to the stats command's execute function
                 commands::stats::execute(&data_path)?;
             }
             Commands::Update => {
-                // Update command doesn't need data_path
                 commands::update::execute()?;
             }
         }
@@ -62,13 +65,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         match cli.command {
              Commands::Run | Commands::Stats | Commands::Update => {
-                eprintln!("Error: This command currently only supports Windows.");
-                // Use std::process::exit to return non-zero code
-                std::process::exit(1);
+                // Return a specific error instead of exiting directly
+                // This allows potential higher-level error handling or logging later
+                return Err(AppError::Platform(
+                    "Command not supported on this platform".to_string()
+                ));
             }
         }
     }
 
-    Ok(())
+    Ok(()) // Return Ok(()) on successful command execution
 }
-
