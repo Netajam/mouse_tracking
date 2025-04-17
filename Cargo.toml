@@ -25,3 +25,4 @@ windows = { version = "0.60.0", features = [
     "Win32_Graphics_Gdi", # For ScreenToClient if needed, though WindowFromPoint uses screen coords
 ]}
 cfg-if = "1.0.0"
+simple_logger = "5.0.0"
