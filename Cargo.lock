@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "mouse_tracking"
-version = "0.1.7"
+version = "0.2.0"
 dependencies = [
  "cfg-if",
  "chrono",
