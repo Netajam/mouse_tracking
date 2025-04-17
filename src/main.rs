@@ -13,6 +13,7 @@ mod windows_api;
 use errors::{AppError, AppResult}; 
 use config::{AppConfig,load_configuration}; 
 use clap::Parser;
+use log::info;
 
 // --- Define CLI Structure (remains the same) ---
 #[derive(Parser, Debug)]
@@ -37,6 +38,8 @@ enum Commands {
 // --- Main Function (Dispatching Commands) ---
 fn main() -> AppResult<()> {
     let cli = Cli::parse(); 
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug")).init();
+    info!("Logger initialized. Starting application."); // Example INFO log
 
     // Get Data Path (needed by run and stats)
     let app_config : AppConfig = load_configuration().map_err(|e| AppError::Config(e.to_string()))?; 
