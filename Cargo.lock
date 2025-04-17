@@ -1166,6 +1166,7 @@ dependencies = [
 name = "mouse_tracking"
 version = "0.1.7"
 dependencies = [
+ "cfg-if",
  "chrono",
  "clap",
  "ctrlc",
