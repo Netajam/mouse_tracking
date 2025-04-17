@@ -1,8 +1,7 @@
 // src/persistence.rs
-use crate::config; 
 use rusqlite::{params, Connection, Result as SqlResult};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 // Removed std::time::Duration, unused here now
 use chrono::{Utc, TimeZone, Timelike};
 
@@ -22,27 +21,6 @@ pub struct StatsData {
 }
 
 // --- File Path and Connection ---
-
-pub fn get_data_file_path() -> Result<PathBuf, String> {
-    match dirs::data_dir() {
-        Some(mut path) => {
-            let app_name = env!("CARGO_PKG_NAME");
-            path.push(app_name);
-            // Assuming config module exists or using hardcoded name for now
-            // path.push(crate::config::DATABASE_FILENAME);
-            path.push(config::DATABASE_FILENAME); 
-            if let Some(parent) = path.parent() {
-                if !parent.exists() {
-                    if let Err(e) = std::fs::create_dir_all(parent) {
-                        return Err(format!("Failed to create data directory {:?}: {}", parent, e));
-                    }
-                }
-            }
-            Ok(path)
-        }
-        None => Err("Could not find user data directory.".to_string()),
-    }
-}
 
 pub fn open_connection(path: &Path) -> SqlResult<Connection> {
     Connection::open(path)
@@ -68,17 +46,22 @@ pub fn initialize_db(conn: &mut Connection) -> SqlResult<()> {
 
 // --- Interval Management ---
 
-pub fn finalize_dangling_intervals(conn: &Connection, shutdown_time: i64) -> SqlResult<usize> {
-    println!("Checking for dangling intervals from previous sessions...");
-    let threshold_secs = config::DANGLING_INTERVAL_RECENT_THRESHOLD_SECS;
+pub fn finalize_dangling_intervals(
+    conn: &Connection,
+    shutdown_time: i64,
+    threshold_secs: i64 // <-- New argument
+) -> SqlResult<usize> {
+    println!("Checking for dangling intervals from previous sessions (threshold: {} seconds)...", threshold_secs);
+    // Use the passed-in threshold
     let cutoff_time = shutdown_time - threshold_secs;
 
     let updated_old = conn.execute(
         include_str!("../sql/finalize_dangling_old.sql"),
-        params![cutoff_time],
+        params![cutoff_time], // Use calculated cutoff_time
     )?;
     let updated_recent = conn.execute(
         include_str!("../sql/finalize_dangling_recent.sql"),
+        // Parameters for recent: shutdown_time (end time), cutoff_time (start time threshold)
         params![shutdown_time, cutoff_time],
     )?;
     let total_updated = updated_old + updated_recent;

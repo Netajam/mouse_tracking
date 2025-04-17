@@ -11,7 +11,7 @@ mod windows_api;
 
 // --- Use items needed in main ---
 use errors::{AppError, AppResult}; 
-use persistence::get_data_file_path;
+use config::{AppConfig,load_configuration}; 
 use clap::Parser;
 
 // --- Define CLI Structure (remains the same) ---
@@ -39,8 +39,7 @@ fn main() -> AppResult<()> {
     let cli = Cli::parse(); 
 
     // Get Data Path (needed by run and stats)
-    // Map the String error from get_data_file_path to AppError::DataDir
-    let data_path = get_data_file_path().map_err(AppError::DataDir)?;
+    let app_config : AppConfig = load_configuration().map_err(|e| AppError::Config(e.to_string()))?; 
 
     // Conditionally compile the command handling for Windows
     #[cfg(target_os = "windows")]
@@ -49,13 +48,13 @@ fn main() -> AppResult<()> {
         // Use '?' to propagate AppResult from execute functions
         match cli.command {
             Commands::Run => {
-                commands::run::execute(&data_path)?;
+                commands::run::execute(&app_config)?;
             }
             Commands::Stats => {
-                commands::stats::execute(&data_path)?;
+                commands::stats::execute(&app_config.database_path)?;
             }
             Commands::Update => {
-                commands::update::execute()?;
+                commands::update::execute(&app_config)?;
             }
         }
     }

@@ -1,18 +1,19 @@
 // src/commands/run.rs
 
-use crate::{persistence, windows_api, config, errors::AppResult};
-use std::path::Path;
+use crate::config::AppConfig;
+use crate::{persistence, windows_api, errors::AppResult};
 use std::sync::{atomic::{AtomicBool, Ordering}, Arc};
 use std::thread;
-use std::time::Instant;
+use std::time::{Instant,Duration};
 use chrono::Utc;
 
 
 
-pub fn execute(data_path: &Path) -> AppResult<()> {
-    println!("Starting {} tracker (run command)...", config::APP_NAME); 
+
+pub fn execute(app_config:&AppConfig) -> AppResult<()> {
+    println!("Starting {} tracker (run command)...", app_config.app_name); 
     println!("Logs events to SQLite DB. Press Ctrl+C to stop.");
-    println!("Database path: {:?}", data_path);
+    println!("Database path: {:?}", &app_config.database_path);
 
     use persistence::{
         open_connection, initialize_db, finalize_dangling_intervals,
@@ -21,10 +22,10 @@ pub fn execute(data_path: &Path) -> AppResult<()> {
 
     // --- Open DB & Initialize ---
     // Use '?' - rusqlite::Error will be automatically converted by #[from]
-    let mut conn = open_connection(data_path)?;
+    let mut conn = open_connection(&app_config.database_path)?;
     initialize_db(&mut conn)?;
     let startup_timestamp = Utc::now().timestamp();
-    finalize_dangling_intervals(&conn, startup_timestamp)?;
+    finalize_dangling_intervals(&conn, startup_timestamp,app_config.dangling_threshold_secs)?;
     aggregate_and_cleanup(&mut conn)?;
 
     // --- Ctrl+C Handling ---
@@ -40,7 +41,7 @@ pub fn execute(data_path: &Path) -> AppResult<()> {
     // --- State Variables for Active Interval ---
     let mut current_cursor_target: Option<(String, String, Instant, i64)> = None;
     // Use config constant for check interval
-    let check_interval = config::CHECK_INTERVAL;
+    let check_interval : Duration = app_config.check_interval;
 
     // --- Main Loop ---
     while running.load(Ordering::SeqCst) {

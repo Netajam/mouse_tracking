@@ -1,11 +1,11 @@
 // src/commands/update.rs
 
-use crate::config;
+use crate::config::AppConfig;
 use crate::errors::AppResult;
 use self_update;
 
 // Change return type to AppResult<()>
-pub fn execute() -> AppResult<()> {
+pub fn execute(app_config:&AppConfig) -> AppResult<()> {
     println!("Checking for updates...");
 
     // Getting version with env! is fine, no error expected here
@@ -15,8 +15,8 @@ pub fn execute() -> AppResult<()> {
     // Use '?' - self_update::errors::Error will be automatically converted
     // to AppError::Update by the #[from] attribute in errors.rs
     let status = self_update::backends::github::Update::configure()
-        .repo_owner(config::GITHUB_REPO_OWNER)
-        .repo_name(config::GITHUB_REPO_NAME)
+        .repo_owner(&app_config.repo_owner)
+        .repo_name(&app_config.repo_name)
         .target(self_update::get_target())
         .bin_name(env!("CARGO_PKG_NAME")) 
         .show_download_progress(true)
