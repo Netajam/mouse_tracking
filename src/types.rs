@@ -82,3 +82,43 @@ impl AggregatedResult {
 // --- Type Aliases ---
 // If your AppError isn't directly usable with rusqlite, create mapping or a specific error enum
 pub type AppResult<T> = Result<T, AppError>; // Assuming AppError can wrap rusqlite::Error
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ApiKeyType {
+    #[value(name = "openai")] // CLI argument name
+    OpenAI,
+    #[value(name = "google")] // Example for future
+    Google,
+    // Add other key types here as needed
+}
+
+// Implement Display for user messages
+impl fmt::Display for ApiKeyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ApiKeyType::OpenAI => write!(f, "OpenAI"),
+            ApiKeyType::Google => write!(f, "Google"),
+        }
+    }
+}
+
+// Helper to get the keyring 'username' (key identifier) for a type
+impl ApiKeyType {
+    pub fn keyring_username(&self) -> &'static str {
+        match self {
+            // These MUST be unique within your app's keyring service
+            ApiKeyType::OpenAI => "openai_api_key",
+            ApiKeyType::Google => "google_api_key",
+        }
+    }
+}
+#[derive(clap::Subcommand, Debug)]
+pub enum ConfigCommand {
+    /// Set an API Key securely (e.g., openai, google)
+    SetKey {
+        /// The type of API key to set
+        #[arg(value_enum)] // Use the enum directly
+        key_type: ApiKeyType,
+    },
+    // No GetKey or DeleteKey based on your requirements
+}

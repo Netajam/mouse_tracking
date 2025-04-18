@@ -26,3 +26,5 @@ windows = { version = "0.60.0", features = [
 ]}
 cfg-if = "1.0.0"
 simple_logger = "5.0.0"
+keyring = "3.6.2"
+rpassword = "7.3.1"

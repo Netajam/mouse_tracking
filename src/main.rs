@@ -34,6 +34,7 @@ struct Cli {
     verbose: u8,
 }
 
+
 #[derive(clap::Subcommand, Debug)]
 enum Commands {
     /// Start tracking application usage
@@ -47,6 +48,11 @@ enum Commands {
     Aggregate,
     /// Initialize or update the database schema
     InitDb,
+    /// Manage configuration (like API keys)
+    Config {
+        #[command(subcommand)]
+        config_command: types::ConfigCommand,
+    },
 }
 
 fn setup_logging(verbosity: u8) {
@@ -98,6 +104,10 @@ fn main() -> AppResult<()> {
              persistence::initialize_db(&mut conn)?;
              log::info!("Database initialization check complete.");
          }
+         Commands::Config { config_command } => {
+            log::info!("Executing config command: {:?}", config_command);
+            commands::set_key::execute_config_command(&app_config, config_command)?;
+        }
     }
 
     Ok(())
